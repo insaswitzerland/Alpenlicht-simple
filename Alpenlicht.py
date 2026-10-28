@@ -59,7 +59,7 @@ if _DATA_DIR:
     os.makedirs(_DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(_DATA_DIR or HERE, "alpenlicht.db")
 PORT = int(os.environ.get("ALPENLICHT_PORT") or os.environ.get("PORT") or "8000")
-VERSION = "6.1"
+VERSION = "6.2"
 PROTECT_DASHBOARD = os.environ.get("ALPENLICHT_PASSWORD") == "1"
 HOST = os.environ.get("ALPENLICHT_HOST", "127.0.0.1")
 STRIPE_BASE = os.environ.get("ALPENLICHT_STRIPE_BASE", "https://api.stripe.com")          # à incrémenter à chaque livraison
@@ -26206,6 +26206,34 @@ def stripe_key():
     return setting("stripe_secret_key", "").strip()
 
 
+def stripe_diag():
+    """État détaillé de la configuration Stripe, sans jamais révéler la clé."""
+    brut = os.environ.get("ALPENLICHT_STRIPE_KEY", "")
+    env_key = brut.strip()
+    source = "absente"
+    key = ""
+    if env_key.startswith("sk_"):
+        key, source = env_key, "environnement"
+    else:
+        key = setting("stripe_secret_key", "").strip()
+        if key:
+            source = "tableau de bord"
+        elif env_key:
+            source = "environnement invalide"
+    prefixe = ""
+    if key:
+        morceaux = key.split("_")
+        prefixe = "_".join(morceaux[:2]) + "_" if len(morceaux) >= 2 else key[:3]
+    return {
+        "source": source,
+        "prefixe": prefixe,
+        "longueur": len(key),
+        "espace_ou_guillemet": brut != env_key or '"' in brut or "'" in brut,
+        "url_publique": bool(setting("public_url", "").strip()),
+        "derniere_erreur": setting("stripe_last_error", ""),
+    }
+
+
 def stripe_ready():
     """Stripe est utilisable si la clé ET une URL publique existent."""
     return bool(stripe_key() and setting("public_url", "").strip())
@@ -27381,7 +27409,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/health":
                 return self.send_json({"ok": True, "app": "alpenlicht", "version": VERSION,
                                        "catalogue": CATALOGUE_COUNT[0],
-                                       "mode": "live" if IG_TOKEN else "demo"})
+                                       "mode": "live" if stripe_ready() else "demo",
+                                       "paiement": stripe_diag()})
 
             return self.send_html("Page introuvable — <a href='/'>retour à la boutique</a>", 404)
         except Exception:
@@ -27404,6 +27433,7 @@ class Handler(BaseHTTPRequestHandler):
                     url, err = stripe_create_checkout(order, prod)
                     if url:
                         return self.redirect(url)
+                    set_setting("stripe_last_error", str(err)[:300])
                     log("error", f"Repli sur le paiement de démonstration : {err}")
                 return self.redirect(f"/checkout/{order['ref']}")
 
